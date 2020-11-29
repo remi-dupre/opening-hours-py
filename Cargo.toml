@@ -1,0 +1,17 @@
+[package]
+name = "opening-hours-py"
+version = "0.1.0"
+authors = ["Rémi Dupré <r.dupre@qwant.com>"]
+edition = "2018"
+
+[lib]
+name = "opening_hours"
+crate-type = ["cdylib"]
+
+[dependencies]
+chrono = "0.4"
+opening-hours = { git = "https://github.com/remi-dupre/opening-hours-rs.git" }
+
+[dependencies.pyo3]
+version = "0.12.4"
+features = ["extension-module"]
