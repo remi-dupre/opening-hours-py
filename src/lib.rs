@@ -1,95 +1,111 @@
-use std::convert::TryInto;
+mod errors;
+mod types;
 
-use opening_hours::time_domain;
+use std::sync::Arc;
 
 use chrono::offset::Local;
-use chrono::prelude::*;
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::NaiveDateTime;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDateAccess, PyDateTime, PyTimeAccess};
+use pyo3::wrap_pyfunction;
 
-fn rs_datetime(datetime: &PyDateTime) -> NaiveDateTime {
-    NaiveDateTime::new(
-        NaiveDate::from_ymd(
-            datetime.get_year(),
-            datetime.get_month().into(),
-            datetime.get_day().into(),
-        ),
-        NaiveTime::from_hms(
-            datetime.get_hour().into(),
-            datetime.get_minute().into(),
-            datetime.get_second().into(),
-        ),
-    )
+use opening_hours::{parser, time_domain};
+use types::RangeIterator;
+
+use crate::errors::ParserError;
+use crate::types::{NaiveDateTimeWrapper, State};
+
+fn get_time(datetime: Option<NaiveDateTime>) -> NaiveDateTime {
+    datetime.unwrap_or_else(|| Local::now().naive_local())
 }
 
-fn py_datetime<'p>(py: Python<'p>, datetime: NaiveDateTime) -> PyResult<&'p PyDateTime> {
-    PyDateTime::new(
-        py,
-        datetime.date().year(),
-        datetime.date().month().try_into()?,
-        datetime.date().day().try_into()?,
-        datetime.time().hour().try_into()?,
-        datetime.time().minute().try_into()?,
-        0,
-        0,
-        None,
-    )
-}
-
-fn get_time(datetime: Option<&PyDateTime>) -> NaiveDateTime {
-    datetime
-        .map(rs_datetime)
-        .unwrap_or_else(|| Local::now().naive_local())
+/// Validate that input string is a correct opening hours description.
+///
+/// >>> opening_hours.validate("24/7")
+/// True
+///
+/// >>> opening_hours.validate("24/77")
+/// False
+#[pyfunction]
+#[text_signature = "(oh, /)"]
+fn validate(oh: &str) -> bool {
+    parser::parse(oh).is_ok()
 }
 
 #[pyclass]
+#[text_signature = "(oh, /)"]
 struct TimeDomain {
-    inner: time_domain::TimeDomain,
+    inner: Arc<time_domain::TimeDomain>,
 }
 
 #[pymethods]
 impl TimeDomain {
+    /// Parse input opening hours description.
+    ///
+    /// If the input expression is not valid, raise a SyntaxError exception.
     #[new]
     fn new(oh: &str) -> PyResult<Self> {
         Ok(Self {
-            inner: opening_hours::parser::parse(oh).unwrap(),
+            inner: Arc::new(parser::parse(oh).map_err(ParserError::from)?),
         })
     }
 
-    fn state(&self, time: Option<&PyDateTime>) -> &str {
-        match self.inner.state(get_time(time)) {
-            time_domain::RuleKind::Open => "open",
-            time_domain::RuleKind::Closed => "closed",
-            time_domain::RuleKind::Unknown => "unkown",
-        }
+    /// Get current state of the time domain.
+    ///
+    /// Current time will be used if time is not specified.
+    ///
+    /// >>> opening_hours.TimeDomain("24/7").state()
+    /// "open"
+    ///
+    /// >>> opening_hours.TimeDomain("24/7 off").state()
+    /// "closed"
+    ///
+    /// >>> opening_hours.TimeDomain("24/7 unknown").state()
+    /// "unknown"
+    #[text_signature = "(self[, time])"]
+    fn state(&self, time: Option<NaiveDateTimeWrapper>) -> State {
+        self.inner.state(get_time(time.map(Into::into))).into()
     }
 
-    fn is_open(&self, time: Option<&PyDateTime>) -> bool {
-        self.inner.is_open(get_time(time))
+    #[text_signature = "(self[, time])"]
+    fn is_open(&self, time: Option<NaiveDateTimeWrapper>) -> bool {
+        self.inner.is_open(get_time(time.map(Into::into)))
     }
 
-    fn is_closed(&self, time: Option<&PyDateTime>) -> bool {
-        self.inner.is_closed(get_time(time))
+    #[text_signature = "(self[, time])"]
+    fn is_closed(&self, time: Option<NaiveDateTimeWrapper>) -> bool {
+        self.inner.is_closed(get_time(time.map(Into::into)))
     }
 
-    fn is_unknown(&self, time: Option<&PyDateTime>) -> bool {
-        self.inner.is_unknown(get_time(time))
+    #[text_signature = "(self[, time])"]
+    fn is_unknown(&self, time: Option<NaiveDateTimeWrapper>) -> bool {
+        self.inner.is_unknown(get_time(time.map(Into::into)))
     }
 
-    fn next_change<'p>(
+    #[text_signature = "(self[, time])"]
+    fn next_change(&self, time: Option<NaiveDateTimeWrapper>) -> NaiveDateTimeWrapper {
+        self.inner
+            .next_change(get_time(time.map(Into::into)))
+            .into()
+    }
+
+    fn intervals(
         &self,
-        py: Python<'p>,
-        time: Option<&PyDateTime>,
-    ) -> PyResult<&'p PyDateTime> {
-        py_datetime(py, self.inner.next_change(get_time(time)))
+        start: Option<NaiveDateTimeWrapper>,
+        end: Option<NaiveDateTimeWrapper>,
+    ) -> RangeIterator {
+        RangeIterator::new(
+            self.inner.clone(),
+            get_time(start.map(Into::into)),
+            end.map(Into::into),
+        )
     }
 }
 
 #[pymodule]
-/// A Python module implemented in Rust.
+/// TODO: documentation
 fn opening_hours(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(validate, m)?).unwrap();
     m.add_class::<TimeDomain>()?;
     Ok(())
 }
