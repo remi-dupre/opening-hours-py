@@ -8,12 +8,13 @@ use pyo3::types::{PyDateAccess, PyDateTime, PyTimeAccess};
 use pyo3::PyIterProtocol;
 
 use opening_hours::time_domain;
-use time_domain::RuleKind;
+use time_domain::{DateTimeRange, RuleKind};
 
 // ---
 // --- State
 // ---
 
+#[derive(Debug)]
 pub enum State {
     Open,
     Closed,
@@ -44,7 +45,18 @@ impl<'p> IntoPy<Py<PyAny>> for State {
 // --- NaiveDateTime wrapper
 // ---
 
+#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct NaiveDateTimeWrapper(NaiveDateTime);
+
+impl NaiveDateTimeWrapper {
+    pub fn max_py_value() -> NaiveDateTimeWrapper {
+        NaiveDateTime::new(
+            NaiveDate::from_ymd(9999, 12, 31),
+            NaiveTime::from_hms(23, 59, 59),
+        )
+        .into()
+    }
+}
 
 impl Into<NaiveDateTime> for NaiveDateTimeWrapper {
     fn into(self) -> NaiveDateTime {
@@ -79,20 +91,26 @@ impl<'source> FromPyObject<'source> for NaiveDateTimeWrapper {
     }
 }
 
-impl<'p> IntoPy<PyResult<Py<PyDateTime>>> for NaiveDateTimeWrapper {
-    fn into_py(self, py: Python<'_>) -> PyResult<Py<PyDateTime>> {
-        PyDateTime::new(
-            py,
-            self.0.date().year(),
-            self.0.date().month().try_into()?,
-            self.0.date().day().try_into()?,
-            self.0.time().hour().try_into()?,
-            self.0.time().minute().try_into()?,
-            0,
-            0,
-            None,
-        )
-        .map(|x| x.into())
+impl<'p> IntoPy<PyResult<Option<Py<PyDateTime>>>> for NaiveDateTimeWrapper {
+    fn into_py(self, py: Python<'_>) -> PyResult<Option<Py<PyDateTime>>> {
+        Ok(if self >= Self::max_py_value() {
+            None
+        } else {
+            Some(
+                PyDateTime::new(
+                    py,
+                    self.0.date().year(),
+                    self.0.date().month().try_into()?,
+                    self.0.date().day().try_into()?,
+                    self.0.time().hour().try_into()?,
+                    self.0.time().minute().try_into()?,
+                    0,
+                    0,
+                    None,
+                )?
+                .into(),
+            )
+        })
     }
 }
 
@@ -112,7 +130,7 @@ impl<'p> IntoPy<Py<PyAny>> for NaiveDateTimeWrapper {
 #[pyclass(unsendable)]
 pub struct RangeIterator {
     _td: Arc<time_domain::TimeDomain>,
-    iter: time_domain::TimeDomainIterator<'static>,
+    iter: Box<dyn Iterator<Item = DateTimeRange<'static>>>,
 }
 
 impl RangeIterator {
@@ -121,14 +139,22 @@ impl RangeIterator {
         start: NaiveDateTime,
         end: Option<NaiveDateTime>,
     ) -> Self {
-        // TODO: it may be better to use something better than transmute here
-        let iter = unsafe {
+        let iter: Box<dyn Iterator<Item = DateTimeRange>> = {
             if let Some(end) = end {
-                std::mem::transmute(td.iter_range(start, end))
+                Box::new(td.iter_range(start, end)) as _
             } else {
-                std::mem::transmute(td.iter_from(start))
+                Box::new(td.iter_from(start))
             }
         };
+
+        // This transmute will only change the lifetime specifier for resulting
+        // iterator items.
+        //
+        // This is safe as long as we don't return any reference to these items
+        // since self._td will live as long as self.
+        //
+        // TODO: there is probably a solution less agressive than transmute?
+        let iter = unsafe { std::mem::transmute(iter) };
 
         Self { _td: td, iter }
     }

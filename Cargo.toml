@@ -1,6 +1,6 @@
 [package]
 name = "opening-hours-py"
-version = "0.1.1"
+version = "0.1.9"
 authors = ["Rémi Dupré <r.dupre@qwant.com>"]
 edition = "2018"
 
@@ -14,7 +14,7 @@ lto = "fat"
 
 [dependencies]
 chrono = "0.4"
-opening-hours = { git = "https://github.com/remi-dupre/opening-hours-rs.git" }
+opening-hours = { git = "https://github.com/remi-dupre/opening-hours-rs.git", version = "0.1.9" }
 
 [dependencies.pyo3]
 version = "0.12.4"
